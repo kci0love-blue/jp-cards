@@ -1,6 +1,6 @@
 // 오프라인 캐시: 처음 한 번 열면 앱 전체를 저장해 두고, 이후엔 인터넷 없이 실행
 // 파일을 갱신하면 아래 VERSION 값을 바꿔 주세요 (예: v2, v3 …)
-const VERSION = 'jpw-v2';
+const VERSION = 'jpw-v3';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', e => {
