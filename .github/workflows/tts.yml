@@ -1,0 +1,45 @@
+name: 음성 파일 생성 (TTS)
+
+# GitHub 저장소의 Actions 탭에서 "Run workflow"를 누르면 실행됩니다.
+# tts/texts.json 을 읽어 audio/*.mp3 를 만들고 저장소에 커밋합니다 (이미 있는 파일은 건너뜀).
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tts/texts.json"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tts
+  cancel-in-progress: false
+
+jobs:
+  tts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: edge-tts 설치
+        run: pip install --quiet edge-tts
+
+      - name: MP3 생성
+        run: python tts/make_audio.py
+
+      - name: 저장소에 커밋
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add audio
+          if git diff --cached --quiet; then
+            echo "새로 만든 파일이 없어요"
+          else
+            git commit -m "audio: 카드 발음 MP3 생성"
+            git push
+          fi
