@@ -1,7 +1,7 @@
 // 오프라인 캐시: 처음 한 번 열면 앱 전체를 저장해 두고, 이후엔 인터넷 없이 실행
 // 파일을 갱신하면 아래 VERSION 값을 바꿔 주세요 (예: v2, v3 …)
-const VERSION = 'jpw-v5';
-const AUDIO = 'jpw-audio'; // 온라인 음성(mp3) 캐시 — 한 번 들은 카드는 오프라인에서도 재생
+const VERSION = 'jpw-v6';
+const AUDIO = 'jpw-audio'; // 발음 mp3 캐시 (audio/*.mp3, 온라인 음성) — 한 번 들은 카드는 오프라인에서도 재생
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', e => {
@@ -13,7 +13,7 @@ self.addEventListener('activate', e => {
 // 캐시 우선, 네트워크가 되면 조용히 새 버전으로 갱신
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
-  if (e.request.url.includes('translate_tts')) {
+  if (e.request.url.includes('translate_tts') || /\/audio\/[0-9a-f]+\.mp3$/.test(e.request.url)) {
     e.respondWith(caches.open(AUDIO).then(c => c.match(e.request).then(hit => hit || fetch(e.request).then(res => { if (res && (res.ok || res.type === 'opaque')) c.put(e.request, res.clone()); return res; }))));
     return;
   }

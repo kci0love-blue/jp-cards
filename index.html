@@ -392,6 +392,7 @@
     <div class="row"><span>목소리</span><select id="voiceSel" style="max-width:58%"></select></div>
     <div class="row"><span>말하기 속도 <b id="rateVal" style="color:var(--fg)"></b></span><input type="range" id="rateRng" min="0.6" max="1.2" step="0.05" style="width:45%"></div>
     <div class="row" style="gap:6px;justify-content:flex-start"><button class="btn" id="voiceTest">▶ 들어보기</button><span id="voiceMsg" style="color:var(--muted);font-size:11px"></span></div>
+    <div class="row" id="prefetchRow" hidden style="gap:6px;justify-content:flex-start"><button class="btn" id="prefetchBtn">전체 소리 미리 받기</button><span id="prefetchMsg" style="color:var(--muted);font-size:11px">오프라인에서도 들으려면 (약 8MB)</span></div>
     <div class="tip" id="voiceTip"></div>
     <h3>오리 도우미</h3>
     <div class="row"><span>화면에 표시</span><input type="checkbox" id="duckOn" checked></div>
@@ -1559,57 +1560,91 @@ function jaVoices() {
   const vs = ('speechSynthesis' in window) ? speechSynthesis.getVoices() : [];
   return vs.filter(v => /^ja/i.test(v.lang) || /ja[-_]JP/i.test(v.lang) || /日本語|Japanese/i.test(v.name)).sort((a, b) => voiceScore(b) - voiceScore(a));
 }
-const ONLINE = '__online__';
+const ONLINE = '__online__', BUNDLED = '__audio__';
+// 녹음된 원어민(신경망) 음성: GitHub 저장소의 audio/<id>.mp3 (tts/make_audio.py 로 생성)
+const AUDIO_BASE = 'https://kci0love-blue.github.io/jp-cards/audio/';
+let audioIds = null; // Set — 사용 가능한 mp3 id 목록 (index.json), null=아직 모름/없음
+function fnv(str) { let h = 0x811c9dc5; for (const ch of str) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); }
+function loadAudioIndex() {
+  fetch(AUDIO_BASE + 'index.json', { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).then(list => {
+    audioIds = Array.isArray(list) && list.length ? new Set(list) : null; renderVoiceUI(jaVoices());
+  }).catch(() => { audioIds = null; });
+}
+function hasBundled(text) { return !!(audioIds && audioIds.has(fnv(String(text || '').trim()))); }
 function pickVoice() {
   const vs = jaVoices();
   jaVoice = (cfg.voice && cfg.voice !== ONLINE && vs.find(v => v.name === cfg.voice)) || vs[0] || null;
   renderVoiceUI(vs);
 }
 // 기기에 일본어 음성이 없거나(삼성 인터넷, 언어팩 없는 PC 등) 사용자가 고르면 온라인 음성(Google 번역 TTS)으로 재생
-function useOnline() { return cfg.voice === ONLINE || !jaVoice; }
-let onlineAudio = null;
-function playOnline(text) {
+function voiceMode(text) { // 실제로 사용할 재생 방식
+  const v = cfg.voice || '';
+  if (v === BUNDLED) return hasBundled(text) ? 'audio' : (jaVoice ? 'device' : 'online');
+  if (v === ONLINE) return 'online';
+  if (v && jaVoice && jaVoice.name === v) return 'device';
+  return hasBundled(text) ? 'audio' : (jaVoice ? 'device' : 'online'); // 자동
+}
+function useOnline() { return voiceMode(cur && cur.speak) === 'online'; }
+let curAudio = null;
+function playUrl(url, onFail) {
   stopSpeech();
-  const url = 'https://translate.google.com/translate_tts?ie=UTF-8&tl=ja&client=tw-ob&q=' + encodeURIComponent(ttsText(text));
-  const a = new Audio(url); onlineAudio = a;
-  a.playbackRate = Math.min(1.1, Math.max(0.7, cfg.rate || 0.9));
-  a.onerror = () => { if (!playOnline.warned) { playOnline.warned = true; toast('온라인 음성을 불러오지 못했어요 (인터넷/차단 확인)'); } };
+  const a = new Audio(url); curAudio = a;
+  a.playbackRate = Math.min(1.2, Math.max(0.6, cfg.rate || 0.9));
+  a.onerror = () => { if (curAudio === a) { curAudio = null; onFail && onFail(); } };
   a.play().catch(() => {});
 }
+function playOnline(text) {
+  playUrl('https://translate.google.com/translate_tts?ie=UTF-8&tl=ja&client=tw-ob&q=' + encodeURIComponent(ttsText(text)), () => {
+    if (!playOnline.warned) { playOnline.warned = true; toast('온라인 음성을 불러오지 못했어요 (인터넷/차단 확인)'); }
+  });
+}
 function stopSpeech() {
-  try { if (onlineAudio) { onlineAudio.pause(); onlineAudio = null; } } catch {}
+  try { if (curAudio) { curAudio.pause(); curAudio = null; } } catch {}
   try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch {}
 }
-function sayText(text) {
-  if (useOnline() || !('speechSynthesis' in window)) return playOnline(text);
+function speakDevice(text) {
+  if (!('speechSynthesis' in window) || !jaVoice) return playOnline(text);
   stopSpeech();
   speechSynthesis.speak(utter(text));
+}
+function sayText(text) {
+  const m = voiceMode(text);
+  if (m === 'audio') return playUrl(AUDIO_BASE + fnv(String(text).trim()) + '.mp3', () => speakDevice(text));
+  if (m === 'device') return speakDevice(text);
+  playOnline(text);
 }
 function renderVoiceUI(vs) {
   const sel = $('voiceSel'); if (!sel) return;
   sel.innerHTML = '';
-  const on = document.createElement('option'); on.value = ONLINE; on.textContent = '🌐 온라인 음성 (인터넷 필요)' + (vs.length ? '' : ' — 기기 음성 없음'); on.selected = useOnline(); sel.appendChild(on);
+  const v0 = cfg.voice || '';
+  const add = (val, label, selected) => { const o = document.createElement('option'); o.value = val; o.textContent = label; o.selected = !!selected; sel.appendChild(o); return o; };
+  add('', '자동 (추천)', v0 === '' || (v0 !== ONLINE && v0 !== BUNDLED && !vs.find(v => v.name === v0)));
+  add(BUNDLED, audioIds ? '🎧 원어민 녹음 음성 (Nanami)' : '🎧 원어민 녹음 음성 — 아직 없음', v0 === BUNDLED);
+  add(ONLINE, '🌐 온라인 음성 (Google)', v0 === ONLINE);
   vs.forEach(v => {
     const o = document.createElement('option'); o.value = v.name;
     const sc = voiceScore(v);
     o.textContent = (sc >= 80 ? '★ ' : '') + v.name.replace(/^Microsoft /, '').replace(/ - Japanese.*$/, '').replace(/\(Japan\)/, '').trim() + (sc >= 80 ? ' (자연스러움)' : '');
-    if (jaVoice && v.name === jaVoice.name) o.selected = true;
+    if (v0 === v.name) o.selected = true;
     sel.appendChild(o);
   });
   const best = vs[0] ? voiceScore(vs[0]) : 0;
   const ua = navigator.userAgent, isAndroid = /Android/i.test(ua), isIOS = /iPhone|iPad/i.test(ua), isEdge = /Edg\//.test(ua);
   let tip;
+  const bund = audioIds ? `녹음 음성 ${audioIds.size}개 사용 가능 · ` : '';
   const hasSS = 'speechSynthesis' in window, total = hasSS ? speechSynthesis.getVoices().length : 0;
   const diag = hasSS ? `기기 음성 ${total}개 (일본어 ${vs.length}개)` : '이 브라우저는 기기 음성(Web Speech)을 지원하지 않아요';
-  if (!vs.length) tip = diag + ' → 온라인 음성으로 자동 재생돼요. 기기 음성을 쓰려면: ' + (isAndroid ? '삼성 인터넷은 지원이 약해요. Play 스토어 「Speech Services by Google」 설치 → 설정 › 일반 › 텍스트 음성 변환 › Google 엔진 › 일본어 음성 설치 → Chrome으로 여는 걸 권해요.' : isIOS ? '설정 › 손쉬운 사용 › 음성 콘텐츠 › 음성 › 일본어 › Kyoko 다운로드.' : 'Windows 설정 › 시간 및 언어 › 언어 및 지역 › 언어 추가 › 日本語 (「텍스트 음성 변환」 체크) 설치 후 앱 재실행. Edge에서는 인터넷 연결 시 Nanami Online (Natural)도 나타나요.');
+  if (audioIds) tip = '원어민 녹음 음성으로 재생돼요 (녹음이 없는 카드만 기기/온라인 음성 사용). ' + diag;
+  else if (!vs.length) tip = diag + ' → 온라인 음성으로 자동 재생돼요. 기기 음성을 쓰려면: ' + (isAndroid ? '삼성 인터넷은 지원이 약해요. Play 스토어 「Speech Services by Google」 설치 → 설정 › 일반 › 텍스트 음성 변환 › Google 엔진 › 일본어 음성 설치 → Chrome으로 여는 걸 권해요.' : isIOS ? '설정 › 손쉬운 사용 › 음성 콘텐츠 › 음성 › 일본어 › Kyoko 다운로드.' : 'Windows 설정 › 시간 및 언어 › 언어 및 지역 › 언어 추가 › 日本語 (「텍스트 음성 변환」 체크) 설치 후 앱 재실행. Edge에서는 인터넷 연결 시 Nanami Online (Natural)도 나타나요.');
   else if (best >= 80) tip = '★ 표시된 목소리가 실제 사람에 가까운 신경망 음성이에요.' + (/Online/i.test(vs[0].name) ? ' (인터넷 연결 시 사용 가능)' : '');
   else if (isAndroid) tip = '더 자연스러운 음성: Play 스토어에서 「Speech Services by Google」 설치 → 휴대폰 설정 › 일반(추가 설정) › 텍스트 음성 변환 › Google 엔진 선택 → 일본어 음성 데이터 설치 후 앱을 다시 열어요.';
   else if (isIOS) tip = '더 자연스러운 음성: 설정 › 손쉬운 사용 › 음성 콘텐츠 › 음성 › 일본어에서 Kyoko(향상된 품질/프리미엄)를 내려받으면 자동으로 사용돼요.';
   else if (!isEdge) tip = '더 자연스러운 음성: Windows에서는 Edge로 실행하면 「Nanami Online (Natural)」 신경망 음성을 쓸 수 있어요. (jp-widget-start.bat이 Edge를 우선 실행하도록 바뀌었어요)';
   else tip = '음성이 없거나 기계적이라면 Windows 설정 › 시간 및 언어 › 언어에서 일본어를 추가하고 음성 팩을 설치해 주세요.';
-  $('voiceTip').textContent = (vs.length ? diag + ' · ' : '') + tip;
+  $('voiceTip').textContent = bund + (vs.length && !audioIds ? diag + ' · ' : '') + tip;
+  $('prefetchRow').hidden = !(audioIds && navigator.serviceWorker && navigator.serviceWorker.controller);
 }
-pickVoice(); if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = pickVoice;
+pickVoice(); loadAudioIndex(); if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = pickVoice;
 // 말하기 전 텍스트 다듬기: 문장 끝 마침표로 억양을 자연스럽게, 쉼표 뒤 살짝 쉬기
 function ttsText(t) {
   t = String(t || '').trim();
@@ -1682,6 +1717,11 @@ function buildChips() {
   pickVoice();
 }
 $('voiceSel').onchange = e => { cfg.voice = e.target.value; store.set('jpw_cfg', cfg); pickVoice(); testVoice(); };
+$('prefetchBtn').onclick = async () => {
+  if (!audioIds) return; const ids = [...audioIds]; let n = 0; const btn = $('prefetchBtn'); btn.disabled = true;
+  for (const id of ids) { try { await fetch(AUDIO_BASE + id + '.mp3'); } catch {} n++; if (n % 20 === 0 || n === ids.length) $('prefetchMsg').textContent = `받는 중 ${n}/${ids.length}`; }
+  $('prefetchMsg').textContent = `완료 — ${ids.length}개 저장됨 (오프라인 재생 가능)`; btn.disabled = false;
+};
 $('rateRng').oninput = e => { cfg.rate = +e.target.value; $('rateVal').textContent = 'x' + cfg.rate.toFixed(2); store.set('jpw_cfg', cfg); };
 $('rateRng').onchange = () => testVoice();
 $('voiceTest').onclick = () => testVoice();
@@ -1689,7 +1729,7 @@ function testVoice() {
   soundUnlocked = true;
   const sample = cur && cur.speak ? cur.speak : 'こんにちは、今日もいい天気ですね。';
   sayText(sample);
-  $('voiceMsg').textContent = useOnline() ? '재생 중: 온라인 음성' : ('재생 중: ' + jaVoice.name.replace(/^Microsoft /, ''));
+  const m = voiceMode(sample); $('voiceMsg').textContent = '재생 중: ' + (m === 'audio' ? '원어민 녹음 음성' : m === 'online' ? '온라인 음성' : jaVoice.name.replace(/^Microsoft /, ''));
 }
 function setMode(m) {
   cfg.mode = m; store.set('jpw_cfg', cfg);
@@ -1948,7 +1988,7 @@ $('xferApply').onclick = importData;
 $('xferClose').onclick = () => { $('xfer').hidden = true; };
 
 // ===== 버전 · 업데이트 확인 =====
-const APP_VERSION = 'v5';
+const APP_VERSION = 'v6';
 $('appVer').textContent = APP_VERSION;
 async function checkUpdate() {
   const msg = $('updMsg'), btn = $('updBtn');
