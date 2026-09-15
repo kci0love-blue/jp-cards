@@ -388,6 +388,11 @@
     <div id="calSummary"></div>
     </div>
     <div class="pane" data-pane="misc">
+    <h3>음성</h3>
+    <div class="row"><span>목소리</span><select id="voiceSel" style="max-width:58%"></select></div>
+    <div class="row"><span>말하기 속도 <b id="rateVal" style="color:var(--fg)"></b></span><input type="range" id="rateRng" min="0.6" max="1.2" step="0.05" style="width:45%"></div>
+    <div class="row" style="gap:6px;justify-content:flex-start"><button class="btn" id="voiceTest">▶ 들어보기</button><span id="voiceMsg" style="color:var(--muted);font-size:11px"></span></div>
+    <div class="tip" id="voiceTip"></div>
     <h3>오리 도우미</h3>
     <div class="row"><span>화면에 표시</span><input type="checkbox" id="duckOn" checked></div>
     <div class="row"><span>말풍선 (팁·격려)</span><input type="checkbox" id="duckTalk" checked></div>
@@ -1148,6 +1153,7 @@ let cfg = store.get('jpw_cfg', {
 });
 if (cfg.sound === undefined) cfg.sound = true;
 if (cfg.autoSpeak === undefined) cfg.autoSpeak = true;
+if (!cfg.rate) cfg.rate = 0.9; if (cfg.voice === undefined) cfg.voice = '';
 if (cfg.revealWait === undefined) cfg.revealWait = 3;
 if (!cfg.dir) cfg.dir = 'jk';
 if (!cfg.quizType) cfg.quizType = 'flip';
@@ -1539,20 +1545,65 @@ $('card').addEventListener('mouseleave', () => { if (timer) { paused = false; tS
 
 // ===== TTS =====
 let jaVoice = null;
+// 음성 품질 점수: 신경망(뉴럴) 음성일수록 높게. Edge의 "Nanami Online (Natural)", Android "Google 日本語", iOS "Kyoko(향상된 품질)" 등
+function voiceScore(v) {
+  const n = v.name || '';
+  if (/espeak|eSpeak/i.test(n)) return 1;
+  if (/Natural|Online/i.test(n)) return 100;
+  if (/Neural|Premium|Enhanced|향상|プレミアム|拡張/i.test(n)) return 90;
+  if (/Google/i.test(n)) return 80;
+  if (/Nanami|Kyoko|O-ren|Otoya|Ayumi|Haruka|Ichiro|Sayaka|Hattori/i.test(n)) return 60;
+  return 20;
+}
+function jaVoices() {
+  const vs = ('speechSynthesis' in window) ? speechSynthesis.getVoices() : [];
+  return vs.filter(v => /^ja/i.test(v.lang) || /ja[-_]JP/i.test(v.lang) || /日本語|Japanese/i.test(v.name)).sort((a, b) => voiceScore(b) - voiceScore(a));
+}
 function pickVoice() {
-  const vs = speechSynthesis.getVoices();
-  jaVoice = vs.find(v => /ja/i.test(v.lang) && /Nanami|Google|Kyoko|O-ren/i.test(v.name)) || vs.find(v => /ja/i.test(v.lang)) || null;
+  const vs = jaVoices();
+  jaVoice = (cfg.voice && vs.find(v => v.name === cfg.voice)) || vs[0] || null;
+  renderVoiceUI(vs);
+}
+function renderVoiceUI(vs) {
+  const sel = $('voiceSel'); if (!sel) return;
+  sel.innerHTML = '';
+  if (!vs.length) { const o = document.createElement('option'); o.textContent = '일본어 음성 없음'; sel.appendChild(o); }
+  vs.forEach(v => {
+    const o = document.createElement('option'); o.value = v.name;
+    const sc = voiceScore(v);
+    o.textContent = (sc >= 80 ? '★ ' : '') + v.name.replace(/^Microsoft /, '').replace(/ - Japanese.*$/, '').replace(/\(Japan\)/, '').trim() + (sc >= 80 ? ' (자연스러움)' : '');
+    if (jaVoice && v.name === jaVoice.name) o.selected = true;
+    sel.appendChild(o);
+  });
+  const best = vs[0] ? voiceScore(vs[0]) : 0;
+  const ua = navigator.userAgent, isAndroid = /Android/i.test(ua), isIOS = /iPhone|iPad/i.test(ua), isEdge = /Edg\//.test(ua);
+  let tip;
+  if (best >= 80) tip = '★ 표시된 목소리가 실제 사람에 가까운 신경망 음성이에요.' + (/Online/i.test(vs[0].name) ? ' (인터넷 연결 시 사용 가능)' : '');
+  else if (isAndroid) tip = '더 자연스러운 음성: Play 스토어에서 「Speech Services by Google」 설치 → 휴대폰 설정 › 일반(추가 설정) › 텍스트 음성 변환 › Google 엔진 선택 → 일본어 음성 데이터 설치 후 앱을 다시 열어요.';
+  else if (isIOS) tip = '더 자연스러운 음성: 설정 › 손쉬운 사용 › 음성 콘텐츠 › 음성 › 일본어에서 Kyoko(향상된 품질/프리미엄)를 내려받으면 자동으로 사용돼요.';
+  else if (!isEdge) tip = '더 자연스러운 음성: Windows에서는 Edge로 실행하면 「Nanami Online (Natural)」 신경망 음성을 쓸 수 있어요. (jp-widget-start.bat이 Edge를 우선 실행하도록 바뀌었어요)';
+  else tip = '음성이 없거나 기계적이라면 Windows 설정 › 시간 및 언어 › 언어에서 일본어를 추가하고 음성 팩을 설치해 주세요.';
+  $('voiceTip').textContent = tip;
 }
 if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+// 말하기 전 텍스트 다듬기: 문장 끝 마침표로 억양을 자연스럽게, 쉼표 뒤 살짝 쉬기
+function ttsText(t) {
+  t = String(t || '').trim();
+  if (!/[。！？!?]$/.test(t)) t += '。';
+  return t;
+}
+function utter(text) {
+  const u = new SpeechSynthesisUtterance(ttsText(text));
+  u.lang = 'ja-JP'; u.rate = cfg.rate || 0.9; u.pitch = 1; if (jaVoice) u.voice = jaVoice;
+  return u;
+}
 function speak(auto = false) {
   if (auto && !cfg.sound) return;
   if (auto && typeof soundUnlocked !== 'undefined' && !soundUnlocked) return;
   if (!auto && !cfg.sound) { toast('소리가 꺼져 있어요 (🔇 클릭으로 켜기)'); return; }
   if (!cur || !('speechSynthesis' in window)) return toast('이 브라우저는 음성을 지원하지 않아요');
   speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(cur.speak);
-  u.lang = 'ja-JP'; u.rate = 0.9; if (jaVoice) u.voice = jaVoice;
-  speechSynthesis.speak(u);
+  speechSynthesis.speak(utter(cur.speak));
   if (!jaVoice && !speak.warned) { speak.warned = true; toast('일본어 음성이 설치되어 있지 않아요 (Windows 설정 › 언어에서 추가)'); }
 }
 
@@ -1605,6 +1656,20 @@ function buildChips() {
   $('interval').value = cfg.interval; $('autoSpeak').checked = cfg.autoSpeak; $('showReading').checked = cfg.showReading; $('revealWait').value = cfg.revealWait;
   $('dir').value = cfg.dir; $('quizType').value = cfg.quizType; $('answerType').value = cfg.answerType; $('goalSel').value = cfg.goalMin;
   $('duckOn').checked = cfg.duckOn; $('duckTalk').checked = cfg.duckTalk;
+  $('rateRng').value = cfg.rate; $('rateVal').textContent = 'x' + Number(cfg.rate).toFixed(2);
+  pickVoice();
+}
+$('voiceSel').onchange = e => { cfg.voice = e.target.value; store.set('jpw_cfg', cfg); pickVoice(); testVoice(); };
+$('rateRng').oninput = e => { cfg.rate = +e.target.value; $('rateVal').textContent = 'x' + cfg.rate.toFixed(2); store.set('jpw_cfg', cfg); };
+$('rateRng').onchange = () => testVoice();
+$('voiceTest').onclick = () => testVoice();
+function testVoice() {
+  if (!('speechSynthesis' in window)) return;
+  soundUnlocked = true;
+  speechSynthesis.cancel();
+  const sample = cur && cur.speak ? cur.speak : 'こんにちは、今日もいい天気ですね。';
+  speechSynthesis.speak(utter(sample));
+  $('voiceMsg').textContent = jaVoice ? ('재생 중: ' + jaVoice.name.replace(/^Microsoft /, '')) : '일본어 음성이 없어요';
 }
 function setMode(m) {
   cfg.mode = m; store.set('jpw_cfg', cfg);
@@ -1767,7 +1832,7 @@ function celebrate() {
     duckSay(['やったね！', 'お疲れ様！', 'すごい！すごい！', '최고예요!'][Math.random() * 4 | 0], 'good', 5000);
   }
   fireworks(4500);
-  if (cfg.sound && 'speechSynthesis' in window && soundUnlocked) { try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance('おめでとう！'); u.lang = 'ja-JP'; if (jaVoice) u.voice = jaVoice; speechSynthesis.speak(u); } catch {} }
+  if (cfg.sound && 'speechSynthesis' in window && soundUnlocked) { try { speechSynthesis.cancel(); speechSynthesis.speak(utter('おめでとう！')); } catch {} }
 }
 function closeParty() { $('party').classList.remove('on'); cancelAnimationFrame(partyRAF); if (cfg.mode === 'ambient' && cur) startTimer(); }
 $('partyClose').onclick = closeParty;
@@ -1863,7 +1928,7 @@ $('xferApply').onclick = importData;
 $('xferClose').onclick = () => { $('xfer').hidden = true; };
 
 // ===== 버전 · 업데이트 확인 =====
-const APP_VERSION = 'v3';
+const APP_VERSION = 'v4';
 $('appVer').textContent = APP_VERSION;
 async function checkUpdate() {
   const msg = $('updMsg'), btn = $('updBtn');
