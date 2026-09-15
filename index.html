@@ -1559,15 +1559,36 @@ function jaVoices() {
   const vs = ('speechSynthesis' in window) ? speechSynthesis.getVoices() : [];
   return vs.filter(v => /^ja/i.test(v.lang) || /ja[-_]JP/i.test(v.lang) || /日本語|Japanese/i.test(v.name)).sort((a, b) => voiceScore(b) - voiceScore(a));
 }
+const ONLINE = '__online__';
 function pickVoice() {
   const vs = jaVoices();
-  jaVoice = (cfg.voice && vs.find(v => v.name === cfg.voice)) || vs[0] || null;
+  jaVoice = (cfg.voice && cfg.voice !== ONLINE && vs.find(v => v.name === cfg.voice)) || vs[0] || null;
   renderVoiceUI(vs);
+}
+// 기기에 일본어 음성이 없거나(삼성 인터넷, 언어팩 없는 PC 등) 사용자가 고르면 온라인 음성(Google 번역 TTS)으로 재생
+function useOnline() { return cfg.voice === ONLINE || !jaVoice; }
+let onlineAudio = null;
+function playOnline(text) {
+  stopSpeech();
+  const url = 'https://translate.google.com/translate_tts?ie=UTF-8&tl=ja&client=tw-ob&q=' + encodeURIComponent(ttsText(text));
+  const a = new Audio(url); onlineAudio = a;
+  a.playbackRate = Math.min(1.1, Math.max(0.7, cfg.rate || 0.9));
+  a.onerror = () => { if (!playOnline.warned) { playOnline.warned = true; toast('온라인 음성을 불러오지 못했어요 (인터넷/차단 확인)'); } };
+  a.play().catch(() => {});
+}
+function stopSpeech() {
+  try { if (onlineAudio) { onlineAudio.pause(); onlineAudio = null; } } catch {}
+  try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch {}
+}
+function sayText(text) {
+  if (useOnline() || !('speechSynthesis' in window)) return playOnline(text);
+  stopSpeech();
+  speechSynthesis.speak(utter(text));
 }
 function renderVoiceUI(vs) {
   const sel = $('voiceSel'); if (!sel) return;
   sel.innerHTML = '';
-  if (!vs.length) { const o = document.createElement('option'); o.textContent = '일본어 음성 없음'; sel.appendChild(o); }
+  const on = document.createElement('option'); on.value = ONLINE; on.textContent = '🌐 온라인 음성 (인터넷 필요)' + (vs.length ? '' : ' — 기기 음성 없음'); on.selected = useOnline(); sel.appendChild(on);
   vs.forEach(v => {
     const o = document.createElement('option'); o.value = v.name;
     const sc = voiceScore(v);
@@ -1578,14 +1599,17 @@ function renderVoiceUI(vs) {
   const best = vs[0] ? voiceScore(vs[0]) : 0;
   const ua = navigator.userAgent, isAndroid = /Android/i.test(ua), isIOS = /iPhone|iPad/i.test(ua), isEdge = /Edg\//.test(ua);
   let tip;
-  if (best >= 80) tip = '★ 표시된 목소리가 실제 사람에 가까운 신경망 음성이에요.' + (/Online/i.test(vs[0].name) ? ' (인터넷 연결 시 사용 가능)' : '');
+  const hasSS = 'speechSynthesis' in window, total = hasSS ? speechSynthesis.getVoices().length : 0;
+  const diag = hasSS ? `기기 음성 ${total}개 (일본어 ${vs.length}개)` : '이 브라우저는 기기 음성(Web Speech)을 지원하지 않아요';
+  if (!vs.length) tip = diag + ' → 온라인 음성으로 자동 재생돼요. 기기 음성을 쓰려면: ' + (isAndroid ? '삼성 인터넷은 지원이 약해요. Play 스토어 「Speech Services by Google」 설치 → 설정 › 일반 › 텍스트 음성 변환 › Google 엔진 › 일본어 음성 설치 → Chrome으로 여는 걸 권해요.' : isIOS ? '설정 › 손쉬운 사용 › 음성 콘텐츠 › 음성 › 일본어 › Kyoko 다운로드.' : 'Windows 설정 › 시간 및 언어 › 언어 및 지역 › 언어 추가 › 日本語 (「텍스트 음성 변환」 체크) 설치 후 앱 재실행. Edge에서는 인터넷 연결 시 Nanami Online (Natural)도 나타나요.');
+  else if (best >= 80) tip = '★ 표시된 목소리가 실제 사람에 가까운 신경망 음성이에요.' + (/Online/i.test(vs[0].name) ? ' (인터넷 연결 시 사용 가능)' : '');
   else if (isAndroid) tip = '더 자연스러운 음성: Play 스토어에서 「Speech Services by Google」 설치 → 휴대폰 설정 › 일반(추가 설정) › 텍스트 음성 변환 › Google 엔진 선택 → 일본어 음성 데이터 설치 후 앱을 다시 열어요.';
   else if (isIOS) tip = '더 자연스러운 음성: 설정 › 손쉬운 사용 › 음성 콘텐츠 › 음성 › 일본어에서 Kyoko(향상된 품질/프리미엄)를 내려받으면 자동으로 사용돼요.';
   else if (!isEdge) tip = '더 자연스러운 음성: Windows에서는 Edge로 실행하면 「Nanami Online (Natural)」 신경망 음성을 쓸 수 있어요. (jp-widget-start.bat이 Edge를 우선 실행하도록 바뀌었어요)';
   else tip = '음성이 없거나 기계적이라면 Windows 설정 › 시간 및 언어 › 언어에서 일본어를 추가하고 음성 팩을 설치해 주세요.';
-  $('voiceTip').textContent = tip;
+  $('voiceTip').textContent = (vs.length ? diag + ' · ' : '') + tip;
 }
-if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+pickVoice(); if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = pickVoice;
 // 말하기 전 텍스트 다듬기: 문장 끝 마침표로 억양을 자연스럽게, 쉼표 뒤 살짝 쉬기
 function ttsText(t) {
   t = String(t || '').trim();
@@ -1601,10 +1625,8 @@ function speak(auto = false) {
   if (auto && !cfg.sound) return;
   if (auto && typeof soundUnlocked !== 'undefined' && !soundUnlocked) return;
   if (!auto && !cfg.sound) { toast('소리가 꺼져 있어요 (🔇 클릭으로 켜기)'); return; }
-  if (!cur || !('speechSynthesis' in window)) return toast('이 브라우저는 음성을 지원하지 않아요');
-  speechSynthesis.cancel();
-  speechSynthesis.speak(utter(cur.speak));
-  if (!jaVoice && !speak.warned) { speak.warned = true; toast('일본어 음성이 설치되어 있지 않아요 (Windows 설정 › 언어에서 추가)'); }
+  if (!cur) return;
+  sayText(cur.speak);
 }
 
 // ===== 설정 =====
@@ -1664,12 +1686,10 @@ $('rateRng').oninput = e => { cfg.rate = +e.target.value; $('rateVal').textConte
 $('rateRng').onchange = () => testVoice();
 $('voiceTest').onclick = () => testVoice();
 function testVoice() {
-  if (!('speechSynthesis' in window)) return;
   soundUnlocked = true;
-  speechSynthesis.cancel();
   const sample = cur && cur.speak ? cur.speak : 'こんにちは、今日もいい天気ですね。';
-  speechSynthesis.speak(utter(sample));
-  $('voiceMsg').textContent = jaVoice ? ('재생 중: ' + jaVoice.name.replace(/^Microsoft /, '')) : '일본어 음성이 없어요';
+  sayText(sample);
+  $('voiceMsg').textContent = useOnline() ? '재생 중: 온라인 음성' : ('재생 중: ' + jaVoice.name.replace(/^Microsoft /, ''));
 }
 function setMode(m) {
   cfg.mode = m; store.set('jpw_cfg', cfg);
@@ -1686,7 +1706,7 @@ $('modeQuiz').onclick = () => setMode('quiz');
 $('openSettings').onclick = openSettings;
 $('closeSettings').onclick = closeSettings;
 function renderSound() { const b = $('speakBtn'); b.textContent = cfg.sound ? '🔊' : '🔇'; b.className = 'icon' + (cfg.sound ? '' : ' off'); }
-$('speakBtn').onclick = e => { e.stopPropagation(); cfg.sound = !cfg.sound; store.set('jpw_cfg', cfg); renderSound(); if (cfg.sound) speak(true); else speechSynthesis.cancel && speechSynthesis.cancel(); toast(cfg.sound ? '소리 켜짐' : '소리 꺼짐'); };
+$('speakBtn').onclick = e => { e.stopPropagation(); cfg.sound = !cfg.sound; store.set('jpw_cfg', cfg); renderSound(); if (cfg.sound) speak(true); else stopSpeech(); toast(cfg.sound ? '소리 켜짐' : '소리 꺼짐'); };
 renderSound();
 $('card').onclick = () => {
   if (typing) { if (!typed) $('ans').focus(); return; }                          // 입력 중엔 클릭으로 넘어가지 않음
@@ -1832,7 +1852,7 @@ function celebrate() {
     duckSay(['やったね！', 'お疲れ様！', 'すごい！すごい！', '최고예요!'][Math.random() * 4 | 0], 'good', 5000);
   }
   fireworks(4500);
-  if (cfg.sound && 'speechSynthesis' in window && soundUnlocked) { try { speechSynthesis.cancel(); speechSynthesis.speak(utter('おめでとう！')); } catch {} }
+  if (cfg.sound && soundUnlocked) { try { sayText('おめでとう！'); } catch {} }
 }
 function closeParty() { $('party').classList.remove('on'); cancelAnimationFrame(partyRAF); if (cfg.mode === 'ambient' && cur) startTimer(); }
 $('partyClose').onclick = closeParty;
@@ -1928,7 +1948,7 @@ $('xferApply').onclick = importData;
 $('xferClose').onclick = () => { $('xfer').hidden = true; };
 
 // ===== 버전 · 업데이트 확인 =====
-const APP_VERSION = 'v4';
+const APP_VERSION = 'v5';
 $('appVer').textContent = APP_VERSION;
 async function checkUpdate() {
   const msg = $('updMsg'), btn = $('updBtn');
